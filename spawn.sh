@@ -5,10 +5,10 @@
 #################
 
 function helpme() {
-    echo "Helpme function" ; exit 1
+    echo "Helpme function" # ; exit 1
 
     echo "Creates Linode nodes and configures them for further use in SIA deployment:"
-    echo "    - adds SSL certs: your cert to all and the cert of the first node to all other nodes,
+    echo "    - adds SSL certs: your cert to all and the cert of the first node to all other nodes,"
     echo "    - acknoledges the first host as \"known host\" with all nodes from the list,"
     echo "    - populates /etc/hosts,"
     echo "    - updates /etc/hostname."
@@ -26,7 +26,7 @@ function helpme() {
     echo
     echo "    OPTIONAL"
     echo "    -l | --location       label of the datacenter location. Note: all nodes in one location. See -q"
-    echo "                            Default: ${REGIO}
+    echo "                            Default: ${REGIO}"
     echo "    -c | --certfile       full path to your certificate public file"
     echo "                            Default: ${CERT_FILE} (iff exists or empty elsewise)"
     echo "    -p | --password       root password to newly created nodes.  All nodes the same password"
@@ -34,10 +34,11 @@ function helpme() {
     echo "                            Therefore, provide correctly one of the arguments following -p or -c"
     echo "    -o | --output-file    filename of the process log"
     echo "                            Default: YYMMDD-hhmm--linode-setup.log"
+    echo "    -r | --ready-timeout  timeout for the node to come alive after spawning and before ssh login attempt"
+    echo "                            Default: 300 seconds.  Required is an integer"
     echo
     echo "Query Linode:"
     echo "    -q | --query-linode   query Linode API for availabe node sizes and datacenter locations"
-    echo "                            Also requires -t, see -t"
     echo
     echo "Other:"
     echo "    -v | --verbose        enable verbose output"
@@ -116,13 +117,26 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -p | --password)
+            shift
+            shift
+            ;;
+        -r | --ready-timeout)
+            shift
+            shift
             ;;
         -o | --output-file)
             ;;
         -q | --query)
+            echo -e "\n   == List of REGIONS ==\n" 
+            curl -s https://api.linode.com/v4/regions | python -mjson.tool | grep -B 1 \"id\":
+            echo -e "\n   == List of NODE SIZE/TYPE ==\n" 
+            curl -s https://api.linode.com/v4/linode/types | python -mjson.tool | grep -A 1 \"id\": | sed 's/label/human\ readable\ label/1'
+            exit 2
             ;;
         -v | --verbose)
             VERBOSE=true
+            echo "Verbose."
+            shift
             ;;
         -h | --help)
             helpme
@@ -139,8 +153,8 @@ done
 ######################
 
 # no token? get help
-echo "<<"$TOKEN">>"
 if [ -z "${TOKEN}" ]; then helpme; fi
+echo "<<"$TOKEN">>"
 
 # TODO: bad token? notify!
 
@@ -172,6 +186,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     LINODE_ID=`echo $OUTPUT | grep -E -o "id\":\ [0-9]+" | sed 's/id\":\ //g'`
     LINODE_ID_ARRAY+=($LINODE_ID)
     echo "Linode ID:  $LINODE_ID"
+    if $VERBOSE; then echo $OUTPUT; fi
 
     LI_PUB_IP=`echo $OUTPUT | grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}"`
     PUBLIC_IP_ARRAY+=($LI_PUB_IP)
@@ -184,12 +199,17 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     LI_PRV_IP=`echo $OUTPUT | grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}" | head -n1`
     PRVATE_IP_ARRAY+=($LI_PRV_IP)
     echo "Private IP: $LI_PRV_IP"
+    if $VERBOSE; then echo $OUTPUT; fi
 
-    # sshpass -p $PASSW ssh-copy-id root@${LI_PUB_IP}
     echo "Server pas: $PASSW"
 
 done
 
+# curl https://api.linode.com/v4/linode/instances/40210707 -H "Authorization: Bearer `cat ~/token2210master`"
+
+#    sleep 15
+#    ssh-keyscan -t ecdsa ${LI_PUB_IP} 2>&1 | grep ecdsa >> ~/.ssh/known_hosts
+#    sshpass -p $PASSW ssh-copy-id root@${LI_PUB_IP}
 
 # what else we want to achieve
 
