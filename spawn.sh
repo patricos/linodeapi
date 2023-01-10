@@ -36,6 +36,7 @@ function helpme() {
     echo "                            Default: YYMMDD-hhmm--linode-setup.log"
     echo "    -r | --ready-timeout  timeout for the node to come alive after spawning and before ssh login attempt"
     echo "                            Default: 300 seconds.  Required is an integer"
+    echo "    -g | --tag            adds a tag to machines. This helps grouping machines in Linode's GUI"
     echo
     echo "Query Linode:"
     echo "    -q | --query-linode   query Linode API for availabe node sizes and datacenter locations"
@@ -53,30 +54,38 @@ function helpme() {
 }
 
 
-############
-# Defaults #
-############
+##########################
+# Global data structures #
+# and defaults           #
+##########################
 
+## STRINGS:
 TOKEN=""
 REGIO=us-central
 IMAGE=linode/centos7
 TYPE=g6-nanode-1
 PASSW=`echo $RANDOM-$RANDOM | md5sum | head -c 18`   # two $RANDOM ~ 32bit of information at most ~ representable with 8-digit hex
-
 CERT_FILE=~/.ssh/id_rsa.pub
 LOG_FILE=`date +%y%m%d-%H%M%S-linode-setup.log`
+HOSTFILE_TMP=`date +%y%m%d-%H%M%S-etc-hostfile.tmp`
 
-# arrays shall not be initiated this way in bash as they will have a zero-elmement at the first index
-#NODES_ARRAY=("")
+## ARRAYS:
+#  arrays shall not be initiated in bash as they will have a zero-elmement at first index
+#NODES_ARRAY=("")       # host names from input
 #SIZES_ARRAY=("")
 #LINODE_ID_ARRAY=("")
 #PUBLIC_IP_ARRAY=("")
 #PRVATE_IP_ARRAY=("")
-#SSH_F_PRT_ARRAY=("")
-NODE_LAST_INDEX=-1
+#SSH_FINGERPRT_A=("")   # ssh finger print array
+#SSH_PUBLIC_CERT=("")   # node's pub cert
 
+## INTEGERS:
+NODE_LAST_INDEX=-1      # after parsing the input, will contain last node input; for loops. 
+
+## BOOLEANS:
 VERBOSE=false
 QUERY=false
+
 
 ####################
 # Argument parsing #
@@ -133,6 +142,10 @@ while [[ $# -gt 0 ]]; do
             curl -s https://api.linode.com/v4/linode/types | python -mjson.tool | grep -A 1 \"id\": | sed 's/label/human\ readable\ label/1'
             exit 2
             ;;
+        -g | --tag)
+            shift
+            shift
+            ;;
         -v | --verbose)
             VERBOSE=true
             echo "Verbose."
@@ -148,26 +161,42 @@ while [[ $# -gt 0 ]]; do
 done
 
 
+
 ######################
 # Intermediate tests #
 ######################
 
 # no token? get help
-if [ -z "${TOKEN}" ]; then helpme; fi
-echo "<<"$TOKEN">>"
-
+if [ -z "${TOKEN}" ];  then echo "ERROR: No token provided.  See the help page.";  helpme;  fi
+if $VERBOSE; then echo "<<"$TOKEN">>"; fi
 # TODO: bad token? notify!
 
-# ONE MORE: [node_array length>0] and [${#NODES_ARRAY[@]} == ${#SIZES_ARRAY[@]}]  iff its not a query
-# for value in "${NODES_ARRAY[@]}"; do echo $value; done
-# for value in "${SIZES_ARRAY[@]}"; do echo $value; done
+
+# ??? one more? : [node_array length>0] and [${#NODES_ARRAY[@]} == ${#SIZES_ARRAY[@]}]  iff its not a query
+# test # for value in "${NODES_ARRAY[@]}"; do echo $value; done
+# test # for value in "${SIZES_ARRAY[@]}"; do echo $value; done
+
+
 NODE_LAST_INDEX=$(( ${#NODES_ARRAY[@]} - 1 ))
 
-if ! [ -f ${CERT_FILE} ]; then
-    echo "WARNINIG: Certificate file cannot be read. If you provided no password, you will have troubles logging into your new nodes."; fi
-if ! command -v sshpass &> /dev/null; then echo "sshpass could not be found.  Install epel-release and sshpass"; fi
+
+# in case of incorrect node-size (a.k.a. node-type) array length, populate the array with defaults
+if ! [${#NODES_ARRAY[@]} == ${#SIZES_ARRAY[@]}]; then
+    echo "WARNINIG: Assuming the default nod size/type of: ${TYPE} because \"--sizes\" array is not the same length as \"--nodelist\" array."
+    for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
+        SIZES_ARRAY+=("${TYPE}")
+    done
+fi
+
+
+echo -e "\n\n" > ${HOSTFILE_TMP}
+if ! [ -f ${HOSTFILE_TMP} ]; then          echo "ERROR: Temporary hostfile ${HOSTFILE_TMP} cannot be written or read.  Fix that, please.";  exit 1;  fi
+if ! [ -f ${CERT_FILE} ]; then             echo "WARNINIG: Certificate file cannot be read. If you provided no password, you will have troubles logging into your new nodes."; fi
+if ! command -v sshpass &> /dev/null; then echo "ERROR: sshpass could not be found.  Install epel-release and sshpass.";  exit 1;  fi
+
 
 if $VERBOSE; then set -x; fi
+
 
 
 ###################
@@ -177,11 +206,13 @@ if $VERBOSE; then set -x; fi
 for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     NODENAME=${NODES_ARRAY[$ANINDEX]}
+    NODESIZE=${SIZES_ARRAY[$ANINDEX]}
+    
     echo -e "\n-->   == Rolling out $NODENAME =="
 
     OUTPUT=` curl --progress-bar -X POST https://api.linode.com/v4/linode/instances \
              -H "Authorization: Bearer $TOKEN" -H "Content-type: application/json" \
-             -d '{"type": "'$TYPE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$NODENAME'"}' `
+             -d '{"type": "'$NODESIZE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$NODENAME'"}' `
 
     LINODE_ID=`echo $OUTPUT | grep -E -o "id\":\ [0-9]+" | sed 's/id\":\ //g'`
     LINODE_ID_ARRAY+=($LINODE_ID)
@@ -192,20 +223,82 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     PUBLIC_IP_ARRAY+=($LI_PUB_IP)
     echo "Public IP:  $LI_PUB_IP"
 
-    OUTPUT=` curl --progress-bar -X POST https://api.linode.com/v4/linode/instances/${LINODE_ID}/ips \
+    OUTPUT=` curl --silent -X POST https://api.linode.com/v4/linode/instances/${LINODE_ID}/ips \
              -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
              -d '{"type": "ipv4", "public": false}'`
 
     LI_PRV_IP=`echo $OUTPUT | grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}" | head -n1`
-    PRVATE_IP_ARRAY+=($LI_PRV_IP)
+    PRVATE_IP_ARRAY+=(${LI_PRV_IP})
     echo "Private IP: $LI_PRV_IP"
     if $VERBOSE; then echo $OUTPUT; fi
+
+    # add a hostsfile entry for that machine
+    echo -e "${LI_PRV_IP}\t${NODENAME}" >> ${HOSTFILE_TMP}
 
     echo "Server pas: $PASSW"
 
 done
 
-# curl https://api.linode.com/v4/linode/instances/40210707 -H "Authorization: Bearer `cat ~/token2210master`"
+
+
+###################
+# Readiness check #
+###################
+
+echo -e "\n-->   == Readiness check and data collection =="
+
+for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
+
+    IP_PRIV=${PRVATE_IP_ARRAY[$ANINDEX]}
+    IP_PUBL=${PUBLIC_IP_ARRAY[$ANINDEX]}
+    NODE_ID=${LINODE_ID_ARRAY[$ANINDEX]}
+    NODNAME=${NODES_ARRAY[$ANINDEX]}
+    IS_REDY=false
+
+    echo -n "Waiting for ${NODNAME} to get ready: "
+    
+    while ! ${IS_REDY}; do  # IS_REDY contains function name as used for calling: functionName=false() xor functionName=true(), which always finishes with (bool)true xor (bool)false.
+    
+        OUTPUT=`curl -s -X GET https://api.linode.com/v4/linode/instances/$NODE_ID -H "Authorization: Bearer ${TOKEN}"`
+        STATUS=`echo $OUTPUT | grep -E -o status.*$ | cut -d\" -f3`
+        
+        if [ ${STATUS} == "running" ]; then
+            IS_REDY=true
+            echo " OK."
+        else
+            # if ${VERBOSE}; then echo ${STATUS}; else echo -n "."; fi
+            echo -n "."
+            sleep 5
+        fi
+    done
+
+    # obtain fingerprint for known_hosts
+
+    OUTPUT=`ssh-keyscan -t ecdsa ${IP_PUBL} 2>&1 | grep ecdsa`      # not the best practice to write functions (despite inline!) TWICE (1)
+    while [ -z "$OUTPUT" ]; do
+        echo "wait some more for ecdsa signature of $IP_PUBL ($NODNAME)..."
+        sleep 5
+        # ssh-keyscan -t ecdsa ${IP_PUBL}
+        OUTPUT=`ssh-keyscan -t ecdsa ${IP_PUBL} 2>&1 | grep ecdsa`  # not the best practice to write functions (despite inline!) TWICE (2)
+    done
+    SSH_FP_COMPLETE="${NODNAME},${IP_PRIV},${OUTPUT}"
+    SSH_FINGERPRT_A+=(${SSH_FP_COMPLETE})
+    echo ${SSH_FP_COMPLETE}
+
+    # obtain ssh-rsa public key for authorized_keys
+
+done
+
+    # populate .ssh/known_hosts
+    # populate .ssh/authorized_keys (including the current localhost)
+    # populate hostsfile
+    
+    # yum install object storage tools
+    # LOL, maybe: ssh help or cowasy greeting on remote node installed
+    
+    # ssh ${IP_ADDR} "reboot"
+
+
 
 #    sleep 15
 #    ssh-keyscan -t ecdsa ${LI_PUB_IP} 2>&1 | grep ecdsa >> ~/.ssh/known_hosts
@@ -215,36 +308,5 @@ done
 
 
 exit
-
-OUTPUT=\
-`curl -X POST https://api.linode.com/v4/linode/instances \
--H "Authorization: Bearer $TOKEN" -H "Content-type: application/json" \
--d '{"type": "'$TYPE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$LABEL'"}'`
-
-echo -e "\n\n$OUTPUT\n"
-
-exit
-
-
-#'{"type": "'$TYPE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$LABEL'"}' \
-# -d '{"type": "'$TYPE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$LABEL'"}' \
-
-echo
-echo
-#output='. '
-
-#ipaddress=$( \
-#echo '{"id": 37453543, "label": "auto-test", "group": "", "status": "provisioning", "created": "2022-07-15T11:34:45", "updated": "2022-07-15T11:34:45",'\
-#     ' "type": "g6-nanode-1", "ipv4": ["45.79.16.121"], "ipv6": "2600:3c00::f03c:93ff:febd:3391/128", "image": "linode/centos7", "region": "us-central",'\
-#     ' "specs": {"disk": 25600, "memory": 1024, "vcpus": 1, "gpus": 0, "transfer": 1000}, "alerts": {"cpu": 90, "network_in": 10, "network_out": 10,'\
-#     ' "transfer_quota": 80, "io": 10000}, "backups": {"enabled": false, "schedule": {"day": null, "window": null}, "last_successful": null},'\
-#     ' "hypervisor": "kvm", "watchdog_enabled": true, "tags": []}' \
-#| grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}"  ) # | read ipaddress; echo $ipaddress
-
-# | (read output ; echo $output; echo ${#output} ) > out.txt | (read output ; echo ${#output} ) >> out.txt # grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}" | read ipaddress; echo $output)
-
-#echo "And the IP address is $ipaddress - DONE."
-#echo $output
-
 
 #  | python -mjson.tool
