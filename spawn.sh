@@ -7,9 +7,9 @@
 function helpme() {
     echo "Helpme function" # ; exit 1
 
-    echo "Creates Linode nodes and configures them for further use in SIA deployment:"
-    echo "    - adds SSL certs: your cert to all and the cert of the first node to all other nodes,"
-    echo "    - acknoledges the first host as \"known host\" with all nodes from the list,"
+    echo "Creates Linode nodes and configures them:"
+    echo "    - adds SSL certs: your cert to all and all-to-all between nodes,"
+    echo "    - acknowledges nodes in \"known hosts\" (all-to-all),"
     echo "    - populates /etc/hosts,"
     echo "    - updates /etc/hostname."
     echo
@@ -64,10 +64,11 @@ TOKEN=""
 REGIO=us-central
 IMAGE=linode/centos7
 TYPE=g6-nanode-1
-PASSW=`echo $RANDOM-$RANDOM | md5sum | head -c 18`   # two $RANDOM ~ 32bit of information at most ~ representable with 8-digit hex
-CERT_FILE=~/.ssh/id_rsa.pub
+PASSW=`echo $RANDOM-$RANDOM | md5sum | head -c 18`      # two $RANDOM ~ 32bit of information at most ~ representable with 8-digit hex
+CERT_FILE=~/.ssh/id_rsa.pub                             # this has to be the private part for login, and public part for copying
 LOG_FILE=`date +%y%m%d-%H%M%S-linode-setup.log`
 HOSTFILE_TMP=`date +%y%m%d-%H%M%S-etc-hostfile.tmp`
+KNOWNHST_TMP=`date +%y%m%d-%H%M%S-home-ssh-knownhosts.tmp`
 
 ## ARRAYS:
 #  arrays shall not be initiated in bash as they will have a zero-elmement at first index
@@ -181,7 +182,7 @@ NODE_LAST_INDEX=$(( ${#NODES_ARRAY[@]} - 1 ))
 
 
 # in case of incorrect node-size (a.k.a. node-type) array length, populate the array with defaults
-if ! [${#NODES_ARRAY[@]} == ${#SIZES_ARRAY[@]}]; then
+if ! [ ${#NODES_ARRAY[@]} = ${#SIZES_ARRAY[@]} ]; then
     echo "WARNINIG: Assuming the default nod size/type of: ${TYPE} because \"--sizes\" array is not the same length as \"--nodelist\" array."
     for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
         SIZES_ARRAY+=("${TYPE}")
@@ -191,8 +192,10 @@ fi
 
 echo -e "\n\n" > ${HOSTFILE_TMP}
 if ! [ -f ${HOSTFILE_TMP} ]; then          echo "ERROR: Temporary hostfile ${HOSTFILE_TMP} cannot be written or read.  Fix that, please.";  exit 1;  fi
+echo -e "\n\n" > ${KNOWNHST_TMP}
+if ! [ -f ${KNOWNHST_TMP} ]; then          echo "ERROR: Temporary known_hosts ${KNOWNHST_TMP} cannot be written or read.  Fix that, please.";  exit 1;  fi
 if ! [ -f ${CERT_FILE} ]; then             echo "WARNINIG: Certificate file cannot be read. If you provided no password, you will have troubles logging into your new nodes."; fi
-if ! command -v sshpass &> /dev/null; then echo "ERROR: sshpass could not be found.  Install epel-release and sshpass.";  exit 1;  fi
+###if ! command -v sshpass &> /dev/null; then echo "WARNINIG: no sshpass found.  Ssh key is therefore required.  (Or break and install epel-release and sshpass.)";  fi
 
 
 if $VERBOSE; then set -x; fi
@@ -203,6 +206,19 @@ if $VERBOSE; then set -x; fi
 # Spawn the nodes #
 ###################
 
+
+# For npw assume the cert is there.  Requirement easily met.
+#    if ! [ -f ${CERT_FILE} ]; then
+#        # no cert in payload
+#    else
+#        # payload includes cert   
+#    fi
+
+# assuming the CERT_FILE is a file holding a valid public part of a local certificate that will later be used for ssh authentication
+
+CERT_ESCAPED=`cat $CERT_FILE | sed 's:\/:\\\/:g'`
+TOKEN_STR=`cat ~/token2311master`
+
 for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     NODENAME=${NODES_ARRAY[$ANINDEX]}
@@ -210,12 +226,13 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     
     echo -e "\n-->   == Rolling out $NODENAME =="
 
-    OUTPUT=` curl --progress-bar -X POST https://api.linode.com/v4/linode/instances \
-             -H "Authorization: Bearer $TOKEN" -H "Content-type: application/json" \
-             -d '{"type": "'$NODESIZE'", "region": "'$REGIO'", "image": "linode/centos7", "root_pass": "'$PASSW'", "label": "'$NODENAME'"}' `
+    YAML_PAYLOAD="{\"type\": \""$NODESIZE"\", \"region\": \""$REGIO"\", \"image\": \""$IMAGE"\", \"root_pass\": \""$PASSW"\", \"label\": \""$NODENAME"\", \"authorized_keys\": [\""$CERT_ESCAPED"\"] }"
+
+    OUTPUT=`curl --progress-bar -X POST https://api.linode.com/v4/linode/instances -H "Authorization: Bearer $TOKEN_STR" -H "Content-type: application/json" -d "$YAML_PAYLOAD"`
 
     LINODE_ID=`echo $OUTPUT | grep -E -o "id\":\ [0-9]+" | sed 's/id\":\ //g'`
     LINODE_ID_ARRAY+=($LINODE_ID)
+
     echo "Linode ID:  $LINODE_ID"
     if $VERBOSE; then echo $OUTPUT; fi
 
@@ -243,6 +260,7 @@ done
 
 ###################
 # Readiness check #
+#  and data scan  #
 ###################
 
 echo -e "\n-->   == Readiness check and data collection =="
@@ -262,7 +280,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
         OUTPUT=`curl -s -X GET https://api.linode.com/v4/linode/instances/$NODE_ID -H "Authorization: Bearer ${TOKEN}"`
         STATUS=`echo $OUTPUT | grep -E -o status.*$ | cut -d\" -f3`
         
-        if [ ${STATUS} == "running" ]; then
+        if [ ${STATUS} = "running" ]; then
             IS_REDY=true
             echo " OK."
         else
@@ -281,20 +299,71 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
         # ssh-keyscan -t ecdsa ${IP_PUBL}
         OUTPUT=`ssh-keyscan -t ecdsa ${IP_PUBL} 2>&1 | grep ecdsa`  # not the best practice to write functions (despite inline!) TWICE (2)
     done
-    SSH_FP_COMPLETE="${NODNAME},${IP_PRIV},${OUTPUT}"
+    SSH_FP_COMPLETE="${NODNAME},${IP_PRIV},${OUTPUT}"           # IP_PUB is included anyway in the ssh-keyscan output, at the beginning
     SSH_FINGERPRT_A+=(${SSH_FP_COMPLETE})
+
     echo ${SSH_FP_COMPLETE}
-
-    # obtain ssh-rsa public key for authorized_keys
-
+    echo ${SSH_FP_COMPLETE} >> ${KNOWNHST_TMP}                  # ecdsa fingerprint: to OPERATOR CONSOLE, and to TEMP_FILE
+    echo ${NODNAME},${OUTPUT} >> ~/.ssh/known_hosts             #                    and to local known_hosts file
+    
+    # ssh-rsa public key for authorized_keys
+    
+    # 1 - operator's console ssh key for key-authenticatoin
+    ###echo "Copying ssh id to authorized_keys of $NODENAME"
+    #sshpass -p ${PASSW} ssh-copy-id -i ${CERT_FILE} root@${LI_PUB_IP}    
+    ###sshpass -p ${PASSW} ssh-copy-id root@${LI_PUB_IP}
+    
+    # 2 - generate and obtain server's public key
+    ssh root@${LI_PUB_IP} "ssh-keygen -f ~/.ssh/id_rsa -q -P ''"
+    # ssh root@${LI_PUB_IP} "/root/cat .ssh/id_rsa.pub"
+    SERVER_PUB_CERT=`ssh root@${LI_PUB_IP} "cat ~/.ssh/id_rsa.pub"`
+    SSH_PUBLIC_CERT+=${SERVER_PUB_CERT}                         # for saving later in all nodes, so all-to-all have the connectivity
+    echo "Sever $NODENAME .ssh/rsa_id.pub is: $SERVER_PUB_CERT"
+    
 done
 
-    # populate .ssh/known_hosts
-    # populate .ssh/authorized_keys (including the current localhost)
-    # populate hostsfile
+
+##############################
+# Propagate stuff to servers #
+##############################
+#
+# create hostsfile entries
+# create known_hosts entries
+#
+# add all to known_hosts
+# copy-ssh-key
+# 
+echo;echo;echo;echo;
+echo "Let's review first!"
+echo;echo;echo
+
+cat ${HOSTFILE_TMP}
+cat ${KNOWNHST_TMP}
+
+exit
+
+for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
+
+    IP_PUBL=${PUBLIC_IP_ARRAY[$ANINDEX]}
+    NODNAME=${NODES_ARRAY[$ANINDEX]}
+
+    # propagate hostsfile
+    cat ${HOSTFILE_TMP} | ssh root@${LI_PUB_IP} "dd >> /etc/hosts"
+
+    # propagate .ssh/known_hosts
+    cat ${KNOWNHST_TMP} | ssh root@${LI_PUB_IP} "dd >> /root/.ssh/known_hosts"
+    
+    # propagate autorized_keys
+    ssh root@${LI_PUB_IP} "mkdir -p ~/.ssh/; cat >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh/; chmod 600 ~/.ssh/authorized_keys"
+    
+    # populate .ssh/authorized_keys between servers in the environment
+    
     
     # yum install object storage tools
     # LOL, maybe: ssh help or cowasy greeting on remote node installed
+
+done
+
     
     # ssh ${IP_ADDR} "reboot"
 

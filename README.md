@@ -15,7 +15,9 @@ Creating an environment of several machines typically involves the following tas
   
 ## System prerequisites
 
-Runs on bash.
+1. Runs on bash,
+1. needs: apt install sshpass,
+1. needs Linode access token with creation of nodes rights.
 
 ### On your terminal box
 
