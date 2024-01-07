@@ -65,8 +65,10 @@ function helpme() {
 
 ## STRINGS:
 TOKEN=""
-REGIO=us-central
-IMAGE=linode/centos7
+#REGIO=us-central       # legacy site, don't use for development
+REGIO=nl-ams
+#IMAGE=linode/centos7   # v.19.1.x
+IMAGE=linode/rocky8     # v.19.2
 TYPE=g6-nanode-1
 PASSW=`echo $RANDOM-$RANDOM | md5sum | head -c 18`      # two $RANDOM ~ 32bit of information at most ~ representable with 8-digit hex
 CERT_FILE=~/.ssh/id_rsa.pub                             # this has to be the private part for login, and public part for copying
@@ -149,6 +151,8 @@ while [[ $# -gt 0 ]]; do
             curl -s https://api.linode.com/v4/regions | python -mjson.tool | grep -B 1 \"id\":
             echo -e "\n   == List of NODE SIZE/TYPE ==\n" 
             curl -s https://api.linode.com/v4/linode/types | python -mjson.tool | grep -A 1 \"id\": | sed 's/label/human\ readable\ label/1'
+            echo -e "\n   == List of IMAGES ==\n" 
+            curl -s https://api.linode.com/v4/images | python -mjson.tool | grep -A 2 \"id\":
             exit 2
             ;;
         -g | --tag)
@@ -242,6 +246,7 @@ if [ ${DELETING} = "false" ]; then
         done
     fi
 
+
     echo -e "\n\n" > ${HOSTFILE_TMP}
     if ! [ -f ${HOSTFILE_TMP} ]; then          echo "ERROR: Temporary hostfile ${HOSTFILE_TMP} cannot be written or read.  Fix that, please.";  exit 1;  fi
     echo -e "\n\n" > ${KNOWNHST_TMP}
@@ -294,7 +299,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     # add a hostsfile entry for that machine
     echo -e "${LI_PRV_IP}\t${NODENAME}" >> ${HOSTFILE_TMP}
-    echo "created " $LINODE_ID $NODENAME $$LI_PUB_IP $LI_PRV_IP >> ${LOG_FILE}
+    echo "created " $LINODE_ID $NODENAME $LI_PUB_IP $LI_PRV_IP >> ${LOG_FILE}
     echo "Server pas: $PASSW"
 
 done
@@ -350,9 +355,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     
     # generate ssh key-pair on nodes.  BEWARE: the entrophy on all newly created nodes may be "the same", with little difference,
     # based on the image used for the node, which brings SECURITY QUESTIONS about the quality of such ssh keys
-############################# PROBLEM HERE
-############################# PROBLEM HERE
-############################# PROBLEM HERE
+
     ssh root@${IP_PUBL} "ssh-keygen -f ~/.ssh/id_rsa -q -P ''"
     # and record public keys
     SERVER_PUB_CERT=`ssh root@${IP_PUBL} "cat ~/.ssh/id_rsa.pub"`
@@ -373,23 +376,33 @@ done
 # copy-ssh-key # i.e. add all to known_hosts
 # 
 
+echo -e "\n-->   == Summary ==\n           hosts-file to propagate:"
 cat ${HOSTFILE_TMP}
+echo -e "\n-->   == Summary ==\n           known_hosts-file to propagate:"
 cat ${KNOWNHST_TMP}
+echo -e "\n"
 
 for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     IP_PUBL=${PUBLIC_IP_ARRAY[$ANINDEX]}
     NODNAME=${NODES_ARRAY[$ANINDEX]}
 
+    echo -e "\n-->   == Propagating data to $NODENAME =="
+
     # propagate hostsfile
     cat ${HOSTFILE_TMP} | ssh root@${IP_PUBL} "dd >> /etc/hosts"
+    echo "${NODNAME} received HOSTS-FILE."
 
     # propagate .ssh/known_hosts
     cat ${KNOWNHST_TMP} | ssh root@${IP_PUBL} "dd >> /root/.ssh/known_hosts"
+    echo "${NODNAME} received KNOWN_HOSTS."
     
     # create autorized_keys
     # cat >> auth_k # is in order to add a possibly missing tailing eol.
-    ssh root@${IP_PUBL} "mkdir -p ~/.ssh/; cat >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh/; chmod 600 ~/.ssh/authorized_keys"
+    ssh root@${IP_PUBL} "mkdir -p ~/.ssh/; echo >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh/; chmod 600 ~/.ssh/authorized_keys"
+    
+    
+    echo "${NODNAME} received your SSH CERT."
     # populate .ssh/authorized_keys between servers in the environment
 
     for SUBINDEX in $(seq 0 $NODE_LAST_INDEX); do
@@ -397,6 +410,8 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
         
             CERT_TO_ADD=${SERVER_PUB_CERT[$SUBINDEX]}
             ssh root@${IP_PUBL} "echo ${CERT_TO_ADD} >> /root/.ssh/authorized_keys"
+
+            echo -n "."
         
         fi
     done
