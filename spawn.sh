@@ -75,6 +75,7 @@ CERT_FILE=~/.ssh/id_rsa.pub                             # this has to be the pri
 LOG_FILE=`date +%y%m%d-%H%M%S-linode-setup.log`
 HOSTFILE_TMP=`date +%y%m%d-%H%M%S-etc-hostfile.tmp`
 KNOWNHST_TMP=`date +%y%m%d-%H%M%S-home-ssh-knownhosts.tmp`
+ACC_KEYS_TMP=`date +%y%m%d-%H%M%S-home-ssh-authorizedkeys.tmp`
 
 ## ARRAYS:
 #  arrays are commented-out since they shall not be initiated in bash (because following initiation they'd have an undesired zero-elmement)
@@ -84,8 +85,9 @@ KNOWNHST_TMP=`date +%y%m%d-%H%M%S-home-ssh-knownhosts.tmp`
 #PUBLIC_IP_ARRAY=("")
 #PRVATE_IP_ARRAY=("")
 #SSH_FINGERPRT_A=("")   # ssh finger print array
-#SSH_PUBLIC_CERT=("")   # node's pub cert
+##SSH_PUBL_CERT_A=("")  # pub certs contain space-characters, therefore not usefull in the same way as like SSH_FINGERPRT_A
 #IDS_TO_DELETE=("")
+
 
 ## INTEGERS:
 NODE_LAST_INDEX=-1      # after parsing the input, will contain last node input; for loops. 
@@ -359,8 +361,9 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     ssh root@${IP_PUBL} "ssh-keygen -f ~/.ssh/id_rsa -q -P ''"
     # and record public keys
     SERVER_PUB_CERT=`ssh root@${IP_PUBL} "cat ~/.ssh/id_rsa.pub"`
-    SSH_PUBLIC_CERT+=${SERVER_PUB_CERT}                         # pub keys for saving later in use in ~/.ssh/authorized_keys of all nodes, so all-to-all have the connectivity
-    
+    echo $SERVER_PUB_CERT >> $ACC_KEYS_TMP
+    #SSH_PUBL_CERT_A+=(${SERVER_PUB_CERT})                       # pub keys for saving later in use in ~/.ssh/authorized_keys of all nodes, so all-to-all have the connectivity
+        
     echo "Sever $NODENAME .ssh/rsa_id.pub is: $SERVER_PUB_CERT"
     
 done
@@ -376,12 +379,7 @@ done
 # copy-ssh-key # i.e. add all to known_hosts
 # 
 
-echo -e "\n-->   == Summary ==\n           hosts-file to propagate:"
-cat ${HOSTFILE_TMP}
-echo -e "\n-->   == Summary ==\n           known_hosts-file to propagate:"
-cat ${KNOWNHST_TMP}
-echo -e "\n"
-
+# looping the nodes
 for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     IP_PUBL=${PUBLIC_IP_ARRAY[$ANINDEX]}
@@ -390,48 +388,37 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     echo -e "\n-->   == Propagating data to $NODENAME =="
 
     # propagate hostsfile
-    cat ${HOSTFILE_TMP} | ssh root@${IP_PUBL} "dd >> /etc/hosts"
+    cat ${HOSTFILE_TMP} | ssh root@${IP_PUBL} "dd >> /etc/hosts; dd >> /etc/hosts"
     echo "${NODNAME} received HOSTS-FILE."
 
     # propagate .ssh/known_hosts
-    cat ${KNOWNHST_TMP} | ssh root@${IP_PUBL} "dd >> /root/.ssh/known_hosts"
+    cat ${KNOWNHST_TMP} | ssh root@${IP_PUBL} "dd >> /root/.ssh/known_hosts; dd >> /root/.ssh/known_hosts"
     echo "${NODNAME} received KNOWN_HOSTS."
     
-    # create autorized_keys
+    # create autorized_keys if it's missing
     # cat >> auth_k # is in order to add a possibly missing tailing eol.
     ssh root@${IP_PUBL} "mkdir -p ~/.ssh/; echo >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh/; chmod 600 ~/.ssh/authorized_keys"
-    
-    
-    echo "${NODNAME} received your SSH CERT."
-    # populate .ssh/authorized_keys between servers in the environment
+    cat ${ACC_KEYS_TMP} | ssh root@${IP_PUBL} "dd >> /root/.ssh/authorized_keys"
+    echo "${NODNAME} received SSH CERTs of all other nodes."
 
-    for SUBINDEX in $(seq 0 $NODE_LAST_INDEX); do
-        if [ "$SUBINDEX" != "$ANINDEX" ]; then                  # don't add your own cert to your own auth_k - why create mess, just don't.
-        
-            CERT_TO_ADD=${SERVER_PUB_CERT[$SUBINDEX]}
-            ssh root@${IP_PUBL} "echo ${CERT_TO_ADD} >> /root/.ssh/authorized_keys"
-
-            echo -n "."
-        
-        fi
-    done
-    
     # yum install object storage tools
     # LOL, maybe: ssh help or cowasy greeting on remote node installed
 
 done
 
+echo;
+echo -e "\n-->   == All DONE. Temp files summary below ==\n"
+
+echo -e "\n-->   == Summary for hosts file ==               hosts-file to propagate:"
+cat ${HOSTFILE_TMP}
+echo -e "\n-->   == Summary for known hosts file ==         known_hosts-file to propagate:"
+cat ${KNOWNHST_TMP}
+echo -e "\n-->   == Summary of authorized keys file ==      authorized_keys-file to propagate:"
+cat ${ACC_KEYS_TMP}
+echo -e "\n"
+
     
     # ssh ${IP_ADDR} "reboot"
-
-
-
-#    sleep 15
-#    ssh-keyscan -t ecdsa ${LI_PUB_IP} 2>&1 | grep ecdsa >> ~/.ssh/known_hosts
-#    sshpass -p $PASSW ssh-copy-id root@${LI_PUB_IP}
-
-# what else we want to achieve
-
 
 exit
 
