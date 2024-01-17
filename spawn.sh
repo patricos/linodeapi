@@ -85,7 +85,7 @@ ACC_KEYS_TMP=`date +%y%m%d-%H%M%S-home-ssh-authorizedkeys.tmp`
 #PUBLIC_IP_ARRAY=("")
 #PRVATE_IP_ARRAY=("")
 #SSH_FINGERPRT_A=("")   # ssh finger print array
-###SSH_PUBL_CERT_A=("")  # pub certs contain space-characters, therefore not usefull in the same way as like SSH_FINGERPRT_A
+####SSH_PUBL_CERT_A=("")  # pub certs contain space-characters, therefore not usefull in the same way as like SSH_FINGERPRT_A
 #IDS_TO_DELETE=("")
 
 
