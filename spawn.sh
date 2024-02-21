@@ -32,6 +32,8 @@ function helpme() {
     echo "    -p | --password       root password to newly created nodes.  All nodes the same password"
     echo "                            Default is a 16-character pseudo-random hex number which is not saved"
     echo "                            Therefore, provide correctly one of the arguments following -p or -c"
+    echo "    -f | --firewall       ID of an existing firewall to add new linodes to. It's a user's responsibility"
+    echo "                            to configure the firewall, and obtain its ID"
     echo "    -o | --output-file    filename of the process log"
     echo "                            Default: YYMMDD-hhmm--linode-setup.log"
     echo "    -r | --ready-timeout  timeout for the node to come alive after spawning and before ssh login attempt"
@@ -65,6 +67,7 @@ function helpme() {
 
 ## STRINGS:
 TOKEN=""
+FIREWALL_ID=""
 #REGIO=us-central       # legacy site, don't use for development
 REGIO=nl-ams
 #IMAGE=linode/centos7   # v.19.1.x
@@ -96,7 +99,7 @@ NODE_LAST_INDEX=-1      # after parsing the input, will contain last node input;
 VERBOSE=false
 QUERY=false
 DELETING=false
-
+FIREWALL=false
 
 ####################
 # Argument parsing #
@@ -142,6 +145,12 @@ while [[ $# -gt 0 ]]; do
             shift
             shift
             ;;
+        -f | --firewall)
+            FIREWALL_ID="${2}"
+            FIREWALL=true
+            shift
+            shift
+            ;;           
         -r | --ready-timeout)
             shift
             shift
@@ -269,16 +278,21 @@ CERT_ESCAPED=`cat $CERT_FILE | sed 's:\/:\\\/:g'`
 
 echo -e "LINODE_ID\tNODENAME\tLI_PUB_IP\tLI_PRV_IP\tNODESIZE\tIMAGE\tREGIO" >> $LOG_FILE
 
+echo -e "\n\n"
+
 for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     NODENAME=${NODES_ARRAY[$ANINDEX]}
     NODESIZE=${SIZES_ARRAY[$ANINDEX]}
     
-    echo -e "\n-->   == Rolling out $NODENAME =="
+    echo -e "\n-->   == Rolling out $NODENAME ==\n"
 
     YAML_PAYLOAD="{\"type\": \""$NODESIZE"\", \"region\": \""$REGIO"\", \"image\": \""$IMAGE"\", \"root_pass\": \""$PASSW"\", \"label\": \""$NODENAME"\", \"authorized_keys\": [\""$CERT_ESCAPED"\"] }"
 
     OUTPUT=`curl --progress-bar -X POST https://api.linode.com/v4/linode/instances -H "Authorization: Bearer $TOKEN" -H "Content-type: application/json" -d "$YAML_PAYLOAD"`
+
+    # Temp debug
+    # echo "$OUTPUT" >> temp.debug.output.log
 
     LINODE_ID=`echo $OUTPUT | grep -E -o "id\":\ [0-9]+" | sed 's/id\":\ //g'`
     LINODE_ID_ARRAY+=($LINODE_ID)
@@ -299,10 +313,17 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     echo "Private IP: $LI_PRV_IP"
     if $VERBOSE; then echo $OUTPUT; fi
 
+    # Temp debug
+    # echo "$OUTPUT" >> temp.debug.output.log
+
     # add a hostsfile entry for that machine
     echo -e "${LI_PRV_IP}\t${NODENAME}" >> ${HOSTFILE_TMP}
     echo "created " $LINODE_ID $NODENAME $LI_PUB_IP $LI_PRV_IP >> ${LOG_FILE}
     echo "Server pas: $PASSW"
+
+    # a wait period being a dirty fix for keeping the command queue (server creation queue)
+    # from filling up to more than 10.  A rule of thumb. UNOFFICIAL, DIRTY FIX.
+    sleep 8
 
 done
 
@@ -323,7 +344,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     NODNAME=${NODES_ARRAY[$ANINDEX]}
     IS_REDY=false
 
-    echo -n "Waiting for ${NODNAME} to get ready: "
+    echo -n -e "\nWaiting for ${NODNAME} to get ready: "
     
     while ! ${IS_REDY}; do  # IS_REDY contains function name as used for calling: functionName=false() xor functionName=true(), which always finishes with (bool)true xor (bool)false.
     
@@ -345,7 +366,7 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
     OUTPUT=`ssh-keyscan -t ecdsa ${IP_PUBL} 2>&1 | grep ecdsa`      # not the best practice to write functions (despite inline!) TWICE (1)
     while [ -z "$OUTPUT" ]; do
         echo " \- wait some more for ecdsa signature of $IP_PUBL ($NODNAME)..."
-        sleep 5
+        sleep 12
         OUTPUT=`ssh-keyscan -t ecdsa ${IP_PUBL} 2>&1 | grep ecdsa`  # not the best practice to write functions (despite inline!) TWICE (2)
     done
     SSH_FP_COMPLETE="${NODNAME},${IP_PRIV},${OUTPUT}"           # IP_PUB is included anyway in the ssh-keyscan output, at the beginning
@@ -403,6 +424,33 @@ for ANINDEX in $(seq 0 $NODE_LAST_INDEX); do
 
     # yum install object storage tools
     # LOL, maybe: ssh help or cowasy greeting on remote node installed
+
+    echo -n "${NODNAME}: Populate the /etc/hostname... "
+    ssh root@${IP_PUBL} "echo $NODNAME > /etc/hostname"
+    echo "Done."
+
+    echo -n "${NODNAME}: Creating swap space... "
+    ssh root@${IP_PUBL} "swapoff -a; dd if=/dev/zero of=/swapfile bs=1MiB count=2048; chmod 0600 /swapfile; mkswap /swapfile; echo '/swapfile swap swap defaults 0 0' >> /etc/fstab; swapon -a"
+    echo "The swap created."
+
+    echo -n "${NODNAME}: Disabling selinux (enforcing-->permissive)... "
+    ssh root@${IP_PUBL} "sed 's/^SELINUX=enforcing$/SELINUX=permissive/1' /etc/selinux/config -i"
+    echo "Done.  REMEMBER TO REBOOT."
+
+    echo "ONLY FOR SOME VERSIONS 9.2"
+    ssh root@${IP_PUBL} 'echo -e "\nmodule(load=\"imudp\")\ninput(type=\"imudp\" port=\"514\")" >> /etc/rsyslog.conf; systemctl restart rsyslog'
+    echo -n "${NODNAME}: syslog UDP reception setup done."
+
+    echo -n "${NODNAME}: CPU performance adjusting... "
+    ssh root@${IP_PUBL} "tuned-adm profile throughput-performance"
+    echo "Now is \"throughput-performance\"."
+
+    echo "${NODNAME}: NOT disabling firewall untill the node is added to a fw-aas firewall above (TODO) or manually."
+    ### ssh root@${IP_PUBL} "systemctl stop firewalld; systemctl disable firewalld"
+
+    echo -n "${NODNAME}: Rebooting... "
+    ssh root@${IP_PUBL} "reboot"
+    echo "Done!"
 
 done
 
