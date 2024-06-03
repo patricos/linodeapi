@@ -13,17 +13,16 @@ Creating an environment of several machines typically involves the following tas
    1. populate **/etc/hosts** and update **/etc/hostname**
    1. **reboot** (for the static hostname to update)
   
-## System prerequisites
+## System prerequisites - NONE ;)
 
-1. Runs on bash,
-1. needs: apt install sshpass,
+1. Runs on bash (default configuration shall be sufficient),
 1. needs Linode access token with creation of nodes rights.
 
 ### On your terminal box
 
 1. Ensure you have some directory with rw access for your activities here.
+1. Endure you have your ssh-key generated and in the default location (`ssh-keygen`).
 1. Obtain the script, e.g. `git clone https://github.com/patricos/linodeapi.git`.
-1. Have sshpass installed, e.g. `sudo yum install sshpass -y`.
 1. Obtain an API token from Linode: `https://www.linode.com/docs/guides/getting-started-with-the-linode-api/#get-an-access-token`.
 
 ### At www.linode.com
@@ -43,6 +42,7 @@ Also available when the script triggered without parameters: `./spawn.sh`.
 Usage:
 spawn.sh -t <TOKEN> -n <NODE LIST> -s <SIZE LIST> [-c <CERT PATH>] [-p <ROOT PASS>] [-l <LOCATION>]
 spawn.sh -t <TOKEN> -q
+spawn.sh -t <TOKEN> --delete <NODE ID LIST>
 
 Node creation:
     REQUIRED
@@ -63,6 +63,10 @@ Node creation:
                             Default: YYMMDD-hhmm--linode-setup.log
     -r | --ready-timeout  timeout for the node to come alive after spawning and before ssh login attempt
                             Default: 300 seconds.  Required is an integer
+    -g | --tag            adds a tag to machines. This helps grouping machines in Linode's GUI"
+
+Node removal:
+    -d | --delete         list of ID nubmers of nodes to be deleted.  Token is also required (see -t )
 
 Query Linode:
     -q | --query-linode   query Linode API for availabe node sizes and datacenter locations
