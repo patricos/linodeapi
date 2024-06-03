@@ -84,10 +84,13 @@ spawn.sh -t 1234567890abcdefgh1234567890 -c /home/patryk/.ssh/id_rsa.pub \
 ## Examples
 
 Ask for Linode's regions, node sizes, images, etc.:
+
 `./spawn.sh  -q`
 
-Create three linodes; location, sizes, names as declared, and a tag added (so nodes are groupped in Linode WWW GUI):
-`./spawn.sh  --token $(cat ~/tokenfile)  --location nl-ams  --sizes g6-standard-1 g6-standard-1 g6-standard-1 --tag sometag --nodelist node1 node2 node3`
+Create two linodes; location, sizes, names as declared, and a tag added (so nodes are groupped in Linode WWW GUI):
+
+`./spawn.sh  --token $(cat ~/tokenfile)  --location nl-ams  --tag sometag  --sizes g6-nanode-1 g6-standard-2  --nodelist node1 node2`
 
 Remove the linodes you have a control over.  Will ask you for confirmation (type 'yes') before actually deleting:
+
 `./spawn.sh --token $(cat ~/tokenfile) --delete 5935635 5935635 5935636`
